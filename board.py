@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""agent-board: Claude / Codex が使うローカル掲示板(Devin連携は保留中)。標準ライブラリのみ、認証なし。"""
+"""agent-board: Claude / Codex / Devin(Local)が使うローカル掲示板。標準ライブラリのみ、認証なし。"""
 import argparse
 import html
 import os
@@ -42,6 +42,15 @@ def connect(db_path: Path) -> sqlite3.Connection:
             created_at TEXT NOT NULL
         )"""
     )
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS notes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            agent TEXT NOT NULL,
+            topic TEXT,
+            body TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )"""
+    )
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -49,7 +58,7 @@ def connect(db_path: Path) -> sqlite3.Connection:
 def cmd_new(args, conn):
     body = args.body or ""
     if body == "-":
-        body = sys.stdin.read()
+        body = sys.stdin.read().rstrip("\n")
     ts = now()
     cur = conn.execute(
         "INSERT INTO issues (title, body, status, author, assignee, created_at, updated_at) "
@@ -61,24 +70,31 @@ def cmd_new(args, conn):
 
 
 def cmd_list(args, conn):
+    if args.unassigned and args.assignee:
+        print("--unassigned と --assignee は同時指定不可", file=sys.stderr)
+        sys.exit(1)
+    clauses = []
     params = []
-    if args.status == "all":
-        query = "SELECT * FROM issues"
-    else:
+    if args.status != "all":
         statuses = [s for s in args.status.split(",") if s]
         unknown = [s for s in statuses if s not in STATUSES]
         if unknown:
             print(f"不明なstatus: {','.join(unknown)} (使えるのは {','.join(STATUSES)},all)", file=sys.stderr)
             sys.exit(1)
         placeholders = ",".join("?" * len(statuses))
+        clauses.append(f"status IN ({placeholders})")
         params.extend(statuses)
-        query = f"SELECT * FROM issues WHERE status IN ({placeholders})"
-    if args.assignee:
-        query += (" AND" if params else " WHERE") + " assignee = ?"
+    if args.unassigned:
+        clauses.append("assignee IS NULL")
+    elif args.assignee:
+        clauses.append("assignee = ?")
         params.append(args.assignee)
     if args.author:
-        query += (" AND" if params else " WHERE") + " author = ?"
+        clauses.append("author = ?")
         params.append(args.author)
+    query = "SELECT * FROM issues"
+    if clauses:
+        query += " WHERE " + " AND ".join(clauses)
     query += " ORDER BY status, updated_at DESC, id" if args.status == "all" else " ORDER BY updated_at DESC, id"
     rows = conn.execute(query, params).fetchall()
     if not rows:
@@ -113,7 +129,7 @@ def cmd_comment(args, conn):
     if not r:
         print(f"#{args.id} は存在しません", file=sys.stderr)
         sys.exit(1)
-    body = sys.stdin.read() if args.body == "-" else args.body
+    body = sys.stdin.read().rstrip("\n") if args.body == "-" else args.body
     ts = now()
     conn.execute(
         "INSERT INTO comments (issue_id, author, body, created_at) VALUES (?, ?, ?, ?)",
@@ -143,6 +159,45 @@ def cmd_status(args, conn):
     print(f"#{args.id} -> {args.new_status}{assignee_note}")
 
 
+def cmd_note(args, conn):
+    body = sys.stdin.read().rstrip("\n") if args.body == "-" else args.body
+    if not body:
+        print("noteの本文が空です", file=sys.stderr)
+        sys.exit(1)
+    ts = now()
+    cur = conn.execute(
+        "INSERT INTO notes (agent, topic, body, created_at) VALUES (?, ?, ?, ?)",
+        (args.agent, args.topic, body, ts),
+    )
+    conn.commit()
+    print(f"note#{cur.lastrowid} 記録 (agent={args.agent})")
+
+
+def cmd_notes(args, conn):
+    clauses = []
+    params = []
+    if args.agent:
+        clauses.append("agent = ?")
+        params.append(args.agent)
+    if args.topic:
+        clauses.append("topic = ?")
+        params.append(args.topic)
+    if args.grep:
+        clauses.append("body LIKE ?")
+        params.append(f"%{args.grep}%")
+    query = "SELECT * FROM notes"
+    if clauses:
+        query += " WHERE " + " AND ".join(clauses)
+    query += " ORDER BY created_at DESC, id"
+    rows = conn.execute(query, params).fetchall()
+    if not rows:
+        print("(該当noteなし)")
+        return
+    for r in rows:
+        topic = f" ({r['topic']})" if r["topic"] else ""
+        print(f"note#{r['id']:<4} [{r['agent']}]{topic} {r['body']}  ({r['created_at']})")
+
+
 def render_html(conn) -> str:
     rows = conn.execute("SELECT * FROM issues ORDER BY status, updated_at DESC, id").fetchall()
     parts = [
@@ -169,6 +224,14 @@ def render_html(conn) -> str:
         ).fetchall()
         for c in comments:
             parts.append(f"<p><b>{html.escape(c['author'])}</b> ({c['created_at']}): {html.escape(c['body'])}</p>")
+
+    notes = conn.execute("SELECT * FROM notes ORDER BY agent, created_at DESC, id").fetchall()
+    if notes:
+        parts.append("<h2>Notes (共有知見ログ)</h2>")
+        for n in notes:
+            topic = f" <i>({html.escape(n['topic'])})</i>" if n["topic"] else ""
+            parts.append(f"<p><b>{html.escape(n['agent'])}</b>{topic} ({n['created_at']}):</p>")
+            parts.append(f"<pre>{html.escape(n['body'])}</pre>")
     return "\n".join(parts)
 
 
@@ -216,6 +279,7 @@ def main():
     sp = sub.add_parser("list", help="issue一覧")
     sp.add_argument("--status", default="open,in_progress", help=f"カンマ区切り or all ({','.join(STATUSES)})")
     sp.add_argument("--assignee", default=None, help="現在の担当で絞り込み")
+    sp.add_argument("--unassigned", action="store_true", help="担当未割当のみ(--assigneeと同時指定不可)")
     sp.add_argument("--author", default=None, help="依頼者(作成時のまま不変)で絞り込み。完了分の回収に使う")
     sp.set_defaults(func=cmd_list)
 
@@ -234,6 +298,18 @@ def main():
     sp.add_argument("new_status", choices=STATUSES)
     sp.add_argument("--assignee", default=None, help="同時に担当を付け替える(例: 完了時に依頼者へ戻す)")
     sp.set_defaults(func=cmd_status)
+
+    sp = sub.add_parser("note", help="エージェント専用の知見を記録(タスクに紐付かない汎用ログ)")
+    sp.add_argument("body", help="'-' を指定すると標準入力から読む")
+    sp.add_argument("--agent", required=True, help="claude/codex/devin等")
+    sp.add_argument("--topic", default=None, help="任意。絞り込み用のタグ")
+    sp.set_defaults(func=cmd_note)
+
+    sp = sub.add_parser("notes", help="知見ログの一覧(--agent省略時は全員分。共有ログなので基本は省略して読む)")
+    sp.add_argument("--agent", default=None, help="書いたエージェントで絞り込み(通常は省略して全員分を読む)")
+    sp.add_argument("--topic", default=None)
+    sp.add_argument("--grep", default=None, help="本文の部分一致検索")
+    sp.set_defaults(func=cmd_notes)
 
     sp = sub.add_parser("serve", help="読み取り専用HTMLビューを起動")
     sp.add_argument("--host", default="127.0.0.1")
