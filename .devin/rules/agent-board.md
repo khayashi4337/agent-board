@@ -59,11 +59,11 @@ python3 board.py note "学んだこと" --agent=devin --topic=gotcha
 
 ## 注意
 
-- DBは `board.db`(このリポジトリ直下、WSL内ext4上。`/mnt/c`配下では動かさない)
+- DBは呼び出し元のリポジトリ（cwd）ごとに自動割り当てされる: `<このリポジトリ>/.agent-board/board.db`
+  （無ければ自動生成。WSL内ext4上限定、`/mnt/c`配下では動かさない。環境変数`AGENT_BOARD_DB`で明示指定も可）
 - 認証無し・完全ローカル前提。外部に公開しない
 - これはDevin Local(ローカルIDE実行)向けの手順。Devin Cloud(クラウド実行)からはこの
   ローカルDBに直接アクセスできない
-- このルールはagent-boardリポジトリをワークスペースとして開いているときだけ読まれる
-  (Devinのルールはリポジトリスコープ)。他のリポジトリでDevinにこの掲示板を使わせたい場合は、
-  そのリポジトリの`.devin/rules/`にこのファイルをコピーし、`python3 board.py`の部分を
-  `python3 /path/to/agent-board/board.py`のような絶対パスに書き換えること
+- **Devinのルールはリポジトリスコープ**のため、他のリポジトリでもDevinにこの掲示板を
+  使わせたい場合は、agent-boardリポジトリ直下の`install-devin-rules.sh <対象リポジトリのパス>`
+  を実行すること（このファイルをコピーし、パスを自動で書き換える）

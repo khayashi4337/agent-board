@@ -10,8 +10,49 @@ from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-DEFAULT_DB = Path(os.environ.get("AGENT_BOARD_DB", Path(__file__).parent / "board.db"))
+LEGACY_SHARED_DB = Path(__file__).parent / "board.db"
 STATUSES = ("open", "in_progress", "done")
+
+
+def find_repo_root(start: Path) -> Path | None:
+    """startから上へ辿り、.gitを持つ最初のディレクトリを返す。無ければNone。"""
+    current = start.resolve()
+    for candidate in (current, *current.parents):
+        if (candidate / ".git").exists():
+            return candidate
+    return None
+
+
+def default_db_path() -> Path:
+    """呼び出し元(cwd)のリポジトリごとに専用のboard.dbを割り当てる。
+
+    優先順位:
+    1. 環境変数 AGENT_BOARD_DB (明示指定・後方互換)
+    2. cwdの直近の .git を持つディレクトリ配下の .agent-board/board.db (リポジトリごとの部屋)
+    3. どちらも無ければ、agent-boardリポジトリ直下の共有board.db (レガシー・非推奨)
+    """
+    env = os.environ.get("AGENT_BOARD_DB")
+    if env:
+        return Path(env)
+
+    repo_root = find_repo_root(Path.cwd())
+    if repo_root is None:
+        return LEGACY_SHARED_DB
+
+    if str(repo_root).startswith("/mnt/"):
+        print(
+            f"[agent-board] 警告: リポジトリ {repo_root} は /mnt 配下 (Windows側drvfs) にあります。"
+            " SQLiteのWALモードが正しく動かない可能性があります。WSL内ネイティブ(ext4)へ"
+            " リポジトリを移すか、AGENT_BOARD_DB で別の場所を明示指定してください。",
+            file=sys.stderr,
+        )
+
+    board_dir = repo_root / ".agent-board"
+    board_dir.mkdir(exist_ok=True)
+    return board_dir / "board.db"
+
+
+DEFAULT_DB = default_db_path()
 
 
 def now() -> str:

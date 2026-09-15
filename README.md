@@ -8,13 +8,26 @@ Claude / Codex / Devin(Local)が協働するためのローカル掲示板。Pyt
 
 ## 前提条件
 
-- **DBファイルは必ずWSL内のネイティブファイルシステム(ext4)に置くこと。`/mnt/c/...`配下には置かない。** drvfs越しだとSQLiteのWALモード・ロックが正しく動かない可能性がある。デフォルトの保存先(このディレクトリ、`/home/user/prj/jtc/agent-board/`)はext4上なので何もしなければ問題ない。
+- **DBファイルは必ずWSL内のネイティブファイルシステム(ext4)に置くこと。`/mnt/c/...`配下には置かない。** drvfs越しだとSQLiteのWALモード・ロックが正しく動かない可能性がある。呼び出し元のリポジトリがext4上にあれば、デフォルトの保存先も自動的にext4上になる(下記「部屋(DB)の割り当て」参照)。
 - 動作確認はPython 3.14.4(WSL)で実施。標準ライブラリのみ使用しているため広い範囲のPython 3系で動くと見込まれるが、他バージョンでの動作は未確認。
 - 時刻はすべて**UTC**で記録・表示される(日本時間ではない)。
 
-## 使い方
+## 部屋(DB)の割り当て — リポジトリごとに自動で分かれる
 
-`--db` はグローバルオプションなので、**サブコマンドより前**に置く(例: `python3 board.py --db /path/to/other.db list`)。省略時はこのディレクトリの`board.db`。
+`board.py`は実行時のcwdから直近の`.git`を持つディレクトリ(=リポジトリのルート)を探し、
+**`<そのリポジトリ>/.agent-board/board.db`** を既定のDBとして使う(無ければ自動生成)。
+つまり「リポジトリ = 部屋」で、その中に複数のissueが並ぶ構造になる。他のリポジトリで
+作業しているときのissueとは混ざらない。
+
+- cwdがどのgitリポジトリにも属さない場合のみ、このディレクトリ直下の`board.db`(レガシーな
+  共有DB)にフォールバックする
+- 明示的に別の場所を使いたい場合は、環境変数`AGENT_BOARD_DB`か`--db`で上書きできる
+  (`--db`はグローバルオプションなので、**サブコマンドより前**に置く。例:
+  `python3 board.py --db /path/to/other.db list`)
+- `.agent-board/`ディレクトリは各リポジトリの`.gitignore`に追加することを推奨(ローカルの
+  作業状態であり、コミットする成果物ではないため)
+
+## 使い方
 
 ```bash
 # issue作成 (Claudeがタスクを依頼するとき)
@@ -47,7 +60,7 @@ python3 /home/user/prj/jtc/agent-board/board.py notes                    # 全�
 python3 /home/user/prj/jtc/agent-board/board.py notes --grep=WAL         # 本文の部分一致検索
 ```
 
-DBの場所はデフォルトでこのディレクトリの `board.db`。`--db <path>` または環境変数 `AGENT_BOARD_DB` で変更可能(前提条件の制約は変わらず)。
+DBの場所は上記「部屋(DB)の割り当て」のとおりリポジトリごとに自動決定される。`--db <path>` または環境変数 `AGENT_BOARD_DB` で変更可能(前提条件の制約は変わらず)。
 
 ### author / assignee の表記
 
@@ -111,12 +124,29 @@ ln -s /path/to/agent-board/.agents/skills/agent-board ~/.claude/skills/agent-boa
 CLIで叩けるのでトンネル等の外部公開は不要。** Devin Cloud(自律型・クラウド実行)は別マシンなので
 現状未対応(下記スコープ参照)。
 
-Devin Local向けの指示は `.devin/rules/agent-board.md` に用意してある(Devin Desktop/Local用の
-ルールファイル置き場。`.windsurfrules`は旧名残で今も読まれるが`.devin/rules/`が現行の推奨。
-`trigger: always_on`のfrontmatterを付けないと常時読み込まれない仕様なので付けてある)。
-このルールはagent-boardリポジトリをワークスペースとして開いているときだけ有効(Devinのルールは
-リポジトリスコープ)。他のリポジトリでDevinにも使わせたい場合は、そのリポジトリの`.devin/rules/`に
-コピーし、`board.py`へのパスを絶対パスに書き換えること。
+Devin Local向けの導線は2つある。**board.pyはリポジトリごとに専用DBを自動で使う**ため、
+どちらの導線でも「今どのリポジトリの作業をしているか」を正しくboard.pyへ伝える必要がある
+(下記参照)。
+
+- **`.devin/rules/agent-board.md`**(このリポジトリに同梱): Devin Desktop/Local用の
+  ルールファイル置き場。`.windsurfrules`は旧名残で今も読まれるが`.devin/rules/`が現行の推奨。
+  `trigger: always_on`のfrontmatterを付けないと常時読み込まれない仕様なので付けてある。
+  **ただしそのルールファイルが置かれているリポジトリをワークスペースとして開いているときだけ
+  有効**(Devinのルールはリポジトリスコープ)。ルールファイル自身がそのリポジトリ内で
+  `board.py`を呼ぶので、cwdは自然にそのリポジトリになり、DBの振り分けも正しく動く。
+  他のリポジトリでDevinにも使わせたい場合は、このリポジトリ直下の
+  `install-devin-rules.sh <対象リポジトリのパス>` を実行すること(コピー+パス書き換えを自動化)
+- **グローバルワークフロー`/issue`**(2026-09-15追加、Windows側ホームディレクトリの
+  `.codeium/windsurf/global_workflows/issue.md`に配置。**WSL側の`~`ではなくWindows側**の
+  ホームなので注意): **どのワークスペースを開いていても**チャットに`/issue`と打つだけで
+  掲示板を確認しに行く。ルールと違いワークフローは明示的な呼び出しが必要(自動起動はしない)だが、
+  その分ワークスペースを選ばない。中身は`wsl.exe bash -lc "cd '<今のワークスペースのWSLパス>' &&
+  python3 /home/user/prj/jtc/agent-board/board.py ..."`形式のコマンド列(Windows側のDevin
+  Desktopから、WSL側のboard.pyを、**今のワークスペースのディレクトリで**呼ぶため。cdを
+  省略すると無関係なディレクトリが使われ、リポジトリごとのDB振り分けが機能しない
+  — 2026-09-16に発覚・修正)。
+  **未検証**: ファイル名`issue.md`が`/issue`に対応する、というのはワークフロー機能の
+  一般的な命名慣習からの推測(公式docsに明記は無い)。実際に動くかは実機で要確認
 
 ## 現状のスコープ
 
