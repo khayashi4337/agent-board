@@ -1,0 +1,4 @@
+board.db
+board.db-wal
+board.db-shm
+__pycache__/
