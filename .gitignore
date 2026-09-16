@@ -2,3 +2,6 @@ board.db
 board.db-wal
 board.db-shm
 __pycache__/
+
+# このマシン固有のパス・設定メモ（公開リポジトリには含めない）
+LOCAL_NOTES.md
